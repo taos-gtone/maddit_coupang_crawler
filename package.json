@@ -1,0 +1,14 @@
+{
+  "name": "coupang-crawler",
+  "version": "3.0.0",
+  "description": "쿠팡 카테고리별 리뷰 많은 상품 크롤러 (진짜 Chrome CDP 연결)",
+  "type": "module",
+  "scripts": {
+    "crawl": "node src/crawl.js",
+    "schedule": "node src/scheduler.js",
+    "view": "node src/view.js"
+  },
+  "dependencies": {
+    "playwright": "^1.52.0"
+  }
+}
