@@ -24,6 +24,12 @@ const TOP_NAMES = [
   "헬스/건강식품", "여행/티켓", "테마관",
 ];
 
+// 카테고리가 아닌 것들 (상단 탭, 기획전 등)
+const EXCLUDE_NAMES = [
+  "로켓프레시", "로켓배송", "로켓와우", "쿠팡플레이", "쿠팡이츠",
+  "입점/판매 신청", "입점/판매신청",
+];
+
 /** 현재 보이는 카테고리 링크 전부 수집 */
 async function getVisibleCategoryLinks(page) {
   return page.evaluate(() => {
@@ -185,8 +191,14 @@ async function main() {
 
     const afterHover = await getVisibleCategoryLinks(page);
 
-    // 2열(중분류) 추출 = 1열보다 오른쪽, 대분류 아닌 것
-    const rightOfCol1 = afterHover.filter((l) => l.x > col1MaxX && !topIdSet.has(l.id));
+    // 2열(중분류) 추출 = 1열보다 오른쪽, 대분류 아닌 것, 제외 목록 아닌 것
+    const rightOfCol1 = afterHover.filter((l) => {
+      if (l.x <= col1MaxX) return false;
+      if (topIdSet.has(l.id)) return false;
+      if (EXCLUDE_NAMES.some((ex) => l.name.includes(ex))) return false;
+      if (TOP_NAMES.some((tn) => l.name === tn)) return false;
+      return true;
+    });
 
     // 2열의 x범위 파악
     let col2Items = [];
@@ -219,9 +231,11 @@ async function main() {
       const afterMidHover = await getVisibleCategoryLinks(page);
       const col3All = getThirdColumn(afterMidHover, col2MaxX);
 
-      // 대분류/중분류 id 제외, 이미 수집된 것 제외
+      // 대분류/중분류 id 제외, 이미 수집된 것 제외, 제외 목록 필터
       const newSmalls = col3All.filter((s) => {
         if (!s.id || topIdSet.has(s.id) || seenIds.has(s.id)) return false;
+        if (EXCLUDE_NAMES.some((ex) => s.name.includes(ex))) return false;
+        if (TOP_NAMES.some((tn) => s.name === tn)) return false;
         return true;
       });
 
