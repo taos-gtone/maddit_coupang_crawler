@@ -200,13 +200,32 @@ async function main() {
       return true;
     });
 
-    // 2열의 x범위 파악
+    // 2열 파악: x좌표별로 그룹핑 → 항목이 가장 많은 그룹이 2열
     let col2Items = [];
+    let col2MinX = 0;
     let col2MaxX = 0;
     if (rightOfCol1.length > 0) {
-      const col2MinX = Math.min(...rightOfCol1.map((l) => l.x));
-      col2Items = rightOfCol1.filter((l) => l.x >= col2MinX && l.x <= col2MinX + 100);
-      col2MaxX = col2MinX + 100;
+      // x좌표를 10px 단위로 그룹핑
+      const xGroups = new Map();
+      for (const l of rightOfCol1) {
+        const bucket = Math.round(l.x / 10) * 10;
+        if (!xGroups.has(bucket)) xGroups.set(bucket, []);
+        xGroups.get(bucket).push(l);
+      }
+
+      // 가장 항목이 많은 x그룹 = 2열
+      let bestBucket = 0;
+      let bestCount = 0;
+      for (const [bucket, items] of xGroups) {
+        if (items.length > bestCount) {
+          bestCount = items.length;
+          bestBucket = bucket;
+        }
+      }
+
+      col2MinX = bestBucket - 20;
+      col2MaxX = bestBucket + 80;
+      col2Items = rightOfCol1.filter((l) => l.x >= col2MinX && l.x <= col2MaxX);
     }
 
     // 중분류 저장 (중복 제거) — 모든 col2Items는 hover 대상으로 유지
