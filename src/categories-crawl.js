@@ -209,7 +209,7 @@ async function main() {
       col2MaxX = col2MinX + 100;
     }
 
-    // 중분류 저장 (중복 제거)
+    // 중분류 저장 (중복 제거) — 모든 col2Items는 hover 대상으로 유지
     const seenIds = new Set(allCategories.map((c) => c.id));
     for (const mid of col2Items) {
       if (!mid.id || seenIds.has(mid.id)) continue;
@@ -222,7 +222,12 @@ async function main() {
     console.log(`    중분류 ${col2Items.length}개: ${col2Items.map((m) => m.name).join(", ")}`);
 
     // ── 5) 각 중분류 hover → 소분류(3열) 전체 수집 ──
+    // 먼저 대분류에 다시 hover해서 2열을 안정적으로 유지
     for (const mid of col2Items) {
+      // 대분류 → 중분류 순서로 hover (메뉴가 닫히지 않도록)
+      await page.mouse.move(parent.cx, parent.cy, { steps: 3 });
+      await new Promise((r) => setTimeout(r, 300));
+
       // 중분류에 hover
       await page.mouse.move(mid.cx, mid.cy, { steps: 3 });
       await new Promise((r) => setTimeout(r, 500 + Math.random() * 300));
