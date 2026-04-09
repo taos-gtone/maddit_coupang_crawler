@@ -203,35 +203,80 @@ async function main() {
     await page.mouse.move(parent.cx, parent.cy, { steps: 5 });
     await new Promise((r) => setTimeout(r, 800 + Math.random() * 400));
 
-    // 보이는 링크 수집 + 2열 스크롤하여 숨겨진 중분류도 수집
-    let afterHover = await getVisibleLinks(page);
-    let rightLinks = afterHover.filter((l) => l.x > col1MaxX && isValidSub(l, topIdSet));
-    let col2 = extractColumn(rightLinks);
+    // 보이는 링크 수집
+    const afterHover = await getVisibleLinks(page);
+    const rightLinks = afterHover.filter((l) => l.x > col1MaxX && isValidSub(l, topIdSet));
+    const col2 = extractColumn(rightLinks);
 
-    // 2열 영역 스크롤: 메뉴 패널 안에서 아래로 스크롤하여 추가 항목 수집
+    // 2열 메뉴 컨테이너의 DOM 스크롤로 숨겨진 중분류 추가 수집
+    // (마우스 휠 스크롤은 다른 대분류를 건드려서 사용 안 함)
     if (col2.items.length > 0) {
-      const col2BottomItem = col2.items.reduce((a, b) => a.cy > b.cy ? a : b);
-      // 2열 영역 안에서 마우스 휠로 스크롤
-      await page.mouse.move(col2BottomItem.cx, col2BottomItem.cy, { steps: 3 });
-      await new Promise((r) => setTimeout(r, 200));
-      await page.mouse.wheel(0, 300);
-      await new Promise((r) => setTimeout(r, 500));
+      const extraItems = await page.evaluate((col2MinX, col2MaxX, colMaxX1) => {
+        // 2열 영역에 있는 링크의 부모 스크롤 컨테이너 찾기
+        const link = document.querySelector(`a[href*='/np/categories/']`);
+        if (!link) return [];
 
-      // 스크롤 후 새로 보이는 링크 추가 수집
-      const afterScroll = await getVisibleLinks(page);
-      const scrolledRight = afterScroll.filter((l) => l.x > col1MaxX && isValidSub(l, topIdSet));
-      const scrolledCol2 = extractColumn(scrolledRight);
+        // 2열 영역의 스크롤 가능한 부모 찾기
+        const allLinks = document.querySelectorAll("a[href*='/np/categories/']");
+        let scrollContainer = null;
 
-      // 기존 + 스크롤 후 합치기 (중복 제거)
-      const mergedMap = new Map();
-      for (const item of [...col2.items, ...scrolledCol2.items]) {
-        if (!mergedMap.has(item.id)) mergedMap.set(item.id, item);
+        for (const a of allLinks) {
+          const rect = a.getBoundingClientRect();
+          if (rect.x >= col2MinX && rect.x <= col2MaxX && rect.width > 0) {
+            let p = a.parentElement;
+            while (p) {
+              if (p.scrollHeight > p.clientHeight + 10) {
+                scrollContainer = p;
+                break;
+              }
+              p = p.parentElement;
+            }
+            if (scrollContainer) break;
+          }
+        }
+
+        if (!scrollContainer) return [];
+
+        // 스크롤 컨테이너를 끝까지 스크롤하면서 모든 링크 수집
+        const found = new Map();
+        const origScroll = scrollContainer.scrollTop;
+
+        for (let pos = 0; pos < scrollContainer.scrollHeight; pos += 200) {
+          scrollContainer.scrollTop = pos;
+          for (const a of scrollContainer.querySelectorAll("a[href*='/np/categories/']")) {
+            const href = a.getAttribute("href") || "";
+            const idMatch = href.match(/categories\/(\d+)/);
+            if (!idMatch) continue;
+            const name = a.textContent?.replace(/\s+/g, " ").trim();
+            if (!name || name.length < 2) continue;
+            let url = href;
+            if (url.startsWith("/")) url = "https://www.coupang.com" + url;
+            const rect = a.getBoundingClientRect();
+            found.set(idMatch[1], {
+              name, url, id: idMatch[1],
+              x: Math.round(rect.x), y: Math.round(rect.y),
+              cx: Math.round(rect.x + rect.width / 2),
+              cy: Math.round(rect.y + rect.height / 2),
+            });
+          }
+        }
+
+        // 스크롤 원위치
+        scrollContainer.scrollTop = origScroll;
+
+        return [...found.values()];
+      }, col2.minX, col2.maxX, col1MaxX);
+
+      // 추가 발견된 항목 합치기
+      if (extraItems.length > 0) {
+        const existingIds = new Set(col2.items.map((i) => i.id));
+        for (const item of extraItems) {
+          if (!existingIds.has(item.id) && isValidSub(item, topIdSet)) {
+            existingIds.add(item.id);
+            col2.items.push(item);
+          }
+        }
       }
-      col2 = { ...col2, items: [...mergedMap.values()] };
-
-      // 대분류에 다시 hover (스크롤로 메뉴가 흐트러졌을 수 있음)
-      await page.mouse.move(parent.cx, parent.cy, { steps: 3 });
-      await new Promise((r) => setTimeout(r, 500));
     }
 
     // 중분류 저장
