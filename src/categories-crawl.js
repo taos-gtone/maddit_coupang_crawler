@@ -1,10 +1,12 @@
 /**
- * 쿠팡 전체 카테고리 트리 수집 v7
+ * 쿠팡 전체 카테고리 트리 수집 v8
  *
  * 동작:
  *   1) 쿠팡 메인 → 햄버거 "카테고리"에 마우스오버 → 대분류 열림
- *   2) 대분류에 마우스오버 → 2열(중분류) 나타남 → 수집
- *   3) 중분류에 마우스오버 → 3열(소분류) 나타남 → 3열 전체 수집
+ *   2) 대분류에 마우스오버 → 2열(중분류) 나타남
+ *   3) 중분류에 마우스오버 → 3열(소분류) 나타남
+ *   - L자 마우스 이동으로 다른 대분류 건드리지 않음
+ *   - 2열 스크롤 처리로 숨겨진 중분류도 수집
  *
  * 사용법:
  *   node src/categories-crawl.js
@@ -24,24 +26,20 @@ const TOP_NAMES = [
   "헬스/건강식품", "여행/티켓", "테마관",
 ];
 
-// 카테고리가 아닌 것들 (상단 탭, 기획전 등)
 const EXCLUDE_NAMES = [
   "로켓프레시", "로켓배송", "로켓와우", "쿠팡플레이", "쿠팡이츠",
-  "입점/판매 신청", "입점/판매신청",
+  "입점/판매 신청", "입점/판매신청", "더보기",
 ];
 
-/** 현재 보이는 카테고리 링크 전부 수집 (보이는 것 + 숨겨진 것) */
-async function getVisibleCategoryLinks(page) {
+/** 화면에 보이는 카테고리 링크 수집 */
+async function getVisibleLinks(page) {
   return page.evaluate(() => {
     const items = [];
     const links = document.querySelectorAll("a[href*='/np/categories/']");
 
     for (const link of links) {
       const rect = link.getBoundingClientRect();
-      // 완전히 없는 것만 제외 (크기가 0인 것)
-      // 화면 밖이지만 DOM에 있는 것은 포함 (메뉴 스크롤 영역)
-      const visible = rect.width > 0 && rect.height > 0;
-      if (!visible) continue;
+      if (rect.width === 0 || rect.height === 0) continue;
 
       const name = link.textContent?.replace(/\s+/g, " ").trim();
       const href = link.getAttribute("href") || "";
@@ -52,8 +50,7 @@ async function getVisibleCategoryLinks(page) {
       if (url.startsWith("/")) url = "https://www.coupang.com" + url;
 
       items.push({
-        name,
-        url,
+        name, url,
         id: idMatch ? idMatch[1] : "",
         x: Math.round(rect.x),
         y: Math.round(rect.y),
@@ -65,55 +62,41 @@ async function getVisibleCategoryLinks(page) {
   });
 }
 
-/** DOM에서 보이지 않는 카테고리도 포함하여 수집 (display:none 포함) */
-async function getAllCategoryLinksFromDOM(page) {
-  return page.evaluate(() => {
-    const items = [];
-    const links = document.querySelectorAll("a[href*='/np/categories/']");
+/** 필터: 제외 목록 + 대분류 이름/id */
+function isValidSub(link, topIdSet) {
+  if (!link.id) return false;
+  if (topIdSet.has(link.id)) return false;
+  if (EXCLUDE_NAMES.some((ex) => link.name.includes(ex))) return false;
+  if (TOP_NAMES.some((tn) => link.name === tn)) return false;
+  return true;
+}
 
-    for (const link of links) {
-      const name = link.textContent?.replace(/\s+/g, " ").trim();
-      const href = link.getAttribute("href") || "";
-      if (!name || name.length < 2 || name.length > 40) continue;
+/** x좌표 그룹핑으로 2열(가장 항목 많은 열) 추출 */
+function extractColumn(links) {
+  if (links.length === 0) return { items: [], minX: 0, maxX: 0 };
 
-      const idMatch = href.match(/categories\/(\d+)/);
-      let url = href;
-      if (url.startsWith("/")) url = "https://www.coupang.com" + url;
+  const xGroups = new Map();
+  for (const l of links) {
+    const bucket = Math.round(l.x / 15) * 15;
+    if (!xGroups.has(bucket)) xGroups.set(bucket, []);
+    xGroups.get(bucket).push(l);
+  }
 
-      // 부모 요소의 클래스로 어느 열인지 추정
-      const parentClasses = [];
-      let p = link.parentElement;
-      for (let i = 0; i < 5 && p; i++) {
-        if (p.className) parentClasses.push(p.className.toString());
-        p = p.parentElement;
-      }
-      const classStr = parentClasses.join(" ").toLowerCase();
-
-      items.push({
-        name,
-        url,
-        id: idMatch ? idMatch[1] : "",
-        classHint: classStr.slice(0, 100),
-      });
+  let bestBucket = 0;
+  let bestCount = 0;
+  for (const [bucket, items] of xGroups) {
+    if (items.length > bestCount) {
+      bestCount = items.length;
+      bestBucket = bucket;
     }
-    return items;
-  });
-}
+  }
 
-/** 링크 목록에서 특정 x범위의 열만 필터 */
-function filterByColumn(links, minX, maxX) {
-  return links.filter((l) => l.x >= minX && l.x <= maxX);
-}
-
-/** 링크 목록에서 3열(가장 오른쪽 열) 추출 */
-function getThirdColumn(links, col2MaxX) {
-  const col3Links = links.filter((l) => l.x > col2MaxX);
-  if (col3Links.length === 0) return [];
-
-  // 3열의 x좌표 범위 파악
-  const col3MinX = Math.min(...col3Links.map((l) => l.x));
-  // 같은 열에 있는 것만
-  return col3Links.filter((l) => l.x >= col3MinX && l.x <= col3MinX + 120);
+  const minX = bestBucket - 30;
+  const maxX = bestBucket + 80;
+  return {
+    items: links.filter((l) => l.x >= minX && l.x <= maxX),
+    minX, maxX,
+  };
 }
 
 async function main() {
@@ -131,62 +114,43 @@ async function main() {
   if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 
   console.log("=".repeat(60));
-  console.log("쿠팡 전체 카테고리 수집 v7");
+  console.log("쿠팡 전체 카테고리 수집 v8");
   console.log("=".repeat(60));
 
-  // ── 1) 쿠팡 메인 접속 ──
+  // ── 1) 쿠팡 메인 ──
   console.log("\n쿠팡 메인 접속...");
   await page.goto("https://www.coupang.com", { waitUntil: "load", timeout: 30000 });
   await new Promise((r) => setTimeout(r, 3000));
 
-  // ── 2) 햄버거 "카테고리"에 마우스오버 → 대분류 열림 ──
+  // ── 2) 햄버거 hover → 대분류 열기 ──
   console.log("카테고리 메뉴에 마우스오버...");
 
   const menuPos = await page.evaluate(() => {
     const allEls = document.querySelectorAll("*");
-    let bestMatch = null;
+    let best = null;
     let bestArea = Infinity;
-
     for (const el of allEls) {
       const rect = el.getBoundingClientRect();
       if (rect.width === 0 || rect.height === 0) continue;
       const text = el.textContent?.trim();
-      if (!text) continue;
-      if (text.includes("카테고리") && text.length < 15) {
+      if (text?.includes("카테고리") && text.length < 15) {
         const area = rect.width * rect.height;
         if (area < bestArea) {
           bestArea = area;
-          bestMatch = {
-            x: Math.round(rect.x + rect.width / 2),
-            y: Math.round(rect.y + rect.height / 2),
-          };
+          best = { x: Math.round(rect.x + rect.width / 2), y: Math.round(rect.y + rect.height / 2) };
         }
       }
     }
-    return bestMatch;
+    return best;
   });
 
-  const hoverX = menuPos?.x || 45;
-  const hoverY = menuPos?.y || 55;
-  console.log(`  hover 위치: (${hoverX}, ${hoverY})`);
-  await page.mouse.move(hoverX, hoverY, { steps: 5 });
+  const hx = menuPos?.x || 45, hy = menuPos?.y || 55;
+  await page.mouse.move(hx, hy, { steps: 5 });
   await new Promise((r) => setTimeout(r, 2000));
 
-  // 메뉴 열림 확인
-  let allLinks = await getVisibleCategoryLinks(page);
-  const menuOpened = allLinks.some((l) => TOP_NAMES.some((n) => l.name === n || l.name.includes(n)));
-
-  if (!menuOpened) {
-    console.log("  ⚠️ 메뉴 안 열림 — 클릭 후 재시도...");
-    await page.mouse.click(hoverX, hoverY);
-    await new Promise((r) => setTimeout(r, 1000));
-    await page.mouse.move(hoverX, hoverY, { steps: 3 });
-    await new Promise((r) => setTimeout(r, 2000));
-    allLinks = await getVisibleCategoryLinks(page);
-  }
-
-  // ── 3) 대분류(1열) 찾기 ──
+  // ── 3) 대분류 찾기 ──
   console.log("\n[1단계] 대분류 확인...");
+  let allLinks = await getVisibleLinks(page);
 
   const level1Items = [];
   for (const topName of TOP_NAMES) {
@@ -194,29 +158,41 @@ async function main() {
     if (found) level1Items.push(found);
   }
 
-  console.log(`  대분류: ${level1Items.length}/${TOP_NAMES.length}개`);
+  if (level1Items.length === 0) {
+    // 재시도: 클릭 후 hover
+    await page.mouse.click(hx, hy);
+    await new Promise((r) => setTimeout(r, 1000));
+    await page.mouse.move(hx, hy, { steps: 3 });
+    await new Promise((r) => setTimeout(r, 2000));
+    allLinks = await getVisibleLinks(page);
+    for (const topName of TOP_NAMES) {
+      const found = allLinks.find((l) => l.name === topName || l.name.includes(topName) || topName.includes(l.name));
+      if (found && !level1Items.find((i) => i.id === found.id)) level1Items.push(found);
+    }
+  }
+
+  console.log(`  대분류: ${level1Items.length}개`);
+  level1Items.forEach((item, i) => console.log(`  ${i + 1}. ${item.name}\t${item.url}`));
 
   if (level1Items.length === 0) {
-    console.log("\n  ❌ 대분류를 찾을 수 없습니다.");
-    console.log("  현재 보이는 링크:");
-    allLinks.slice(0, 20).forEach((l) => console.log(`    "${l.name}" x:${l.x} y:${l.y}`));
+    console.log("  ❌ 대분류를 찾을 수 없습니다.");
     await page.close();
     browser.close();
     process.exit(1);
   }
 
-  // 1열 x좌표 범위
-  const col1Xs = level1Items.map((i) => i.x);
-  const col1MaxX = Math.max(...col1Xs) + 80;
+  const col1MaxX = Math.max(...level1Items.map((i) => i.x)) + 80;
   const topIdSet = new Set(level1Items.map((i) => i.id));
-
-  // 결과 저장
   const allCategories = [];
+  const globalSeenIds = new Set();
+
+  // 대분류 저장
   for (const item of level1Items) {
+    globalSeenIds.add(item.id);
     allCategories.push({ level: 1, ...item, parentId: null, parentName: null });
   }
 
-  // ── 4) 대분류 hover → 중분류 + 소분류 수집 ──
+  // ── 4) 대분류별 중분류 + 소분류 수집 ──
   console.log("\n[2단계] 대분류별 중분류 + 소분류 수집");
 
   for (let i = 0; i < level1Items.length; i++) {
@@ -227,110 +203,48 @@ async function main() {
     await page.mouse.move(parent.cx, parent.cy, { steps: 5 });
     await new Promise((r) => setTimeout(r, 800 + Math.random() * 400));
 
-    const afterHover = await getVisibleCategoryLinks(page);
+    // 보이는 링크 수집
+    const afterHover = await getVisibleLinks(page);
 
-    // 2열(중분류) 추출 = 1열보다 오른쪽, 대분류 아닌 것, 제외 목록 아닌 것
-    const rightOfCol1 = afterHover.filter((l) => {
-      if (l.x <= col1MaxX) return false;
-      if (topIdSet.has(l.id)) return false;
-      if (EXCLUDE_NAMES.some((ex) => l.name.includes(ex))) return false;
-      if (TOP_NAMES.some((tn) => l.name === tn)) return false;
-      return true;
-    });
+    // 1열 오른쪽 + 유효한 것만
+    const rightLinks = afterHover.filter((l) => l.x > col1MaxX && isValidSub(l, topIdSet));
 
-    // 2열 파악: x좌표별로 그룹핑 → 항목이 가장 많은 그룹이 2열
-    let col2Items = [];
-    let col2MinX = 0;
-    let col2MaxX = 0;
-    if (rightOfCol1.length > 0) {
-      // x좌표를 10px 단위로 그룹핑
-      const xGroups = new Map();
-      for (const l of rightOfCol1) {
-        const bucket = Math.round(l.x / 10) * 10;
-        if (!xGroups.has(bucket)) xGroups.set(bucket, []);
-        xGroups.get(bucket).push(l);
-      }
+    // 2열 추출
+    const col2 = extractColumn(rightLinks);
 
-      // 가장 항목이 많은 x그룹 = 2열
-      let bestBucket = 0;
-      let bestCount = 0;
-      for (const [bucket, items] of xGroups) {
-        if (items.length > bestCount) {
-          bestCount = items.length;
-          bestBucket = bucket;
-        }
-      }
+    // 2열이 아닌 것 = 3열 후보 (기본 선택된 중분류의 소분류가 이미 보임)
+    const col3Candidates = rightLinks.filter((l) => l.x > col2.maxX);
 
-      col2MinX = bestBucket - 20;
-      col2MaxX = bestBucket + 80;
-      col2Items = rightOfCol1.filter((l) => l.x >= col2MinX && l.x <= col2MaxX);
+    // 중분류 저장
+    const midItems = col2.items.filter((m) => !globalSeenIds.has(m.id));
+    for (const mid of midItems) {
+      globalSeenIds.add(mid.id);
+      allCategories.push({ level: 2, ...mid, parentId: parent.id, parentName: parent.name });
     }
 
-    // 중분류 저장 (중복 제거) — 모든 col2Items는 hover 대상으로 유지
-    const seenIds = new Set(allCategories.map((c) => c.id));
-    for (const mid of col2Items) {
-      if (!mid.id || seenIds.has(mid.id)) continue;
-      seenIds.add(mid.id);
-      allCategories.push({
-        level: 2, ...mid, parentId: parent.id, parentName: parent.name,
-      });
-    }
+    console.log(`    중분류 ${midItems.length}개: ${midItems.map((m) => m.name).join(", ")}`);
 
-    // DOM 전체에서 누락된 중분류 보완 (화면 밖/스크롤 영역)
-    const allDomLinks = await getAllCategoryLinksFromDOM(page);
-    const existingMidIds = new Set(col2Items.map((m) => m.id));
-    const extraMids = allDomLinks.filter((l) => {
-      if (!l.id || existingMidIds.has(l.id) || topIdSet.has(l.id) || seenIds.has(l.id)) return false;
-      if (EXCLUDE_NAMES.some((ex) => l.name.includes(ex))) return false;
-      if (TOP_NAMES.some((tn) => l.name === tn)) return false;
-      // 2열에 해당하는 DOM 클래스 힌트가 있는 것만
-      return true;
-    });
-
-    // 추가된 것들도 allCategories와 col2Items에 포함
-    // (단, hover 좌표가 없으므로 소분류 수집은 불가)
-    for (const extra of extraMids) {
-      if (seenIds.has(extra.id)) continue;
-      seenIds.add(extra.id);
-      const cat = { level: 2, ...extra, x: 0, y: 0, cx: 0, cy: 0, parentId: parent.id, parentName: parent.name };
-      allCategories.push(cat);
-    }
-
-    const totalMids = col2Items.length + extraMids.length;
-    console.log(`    중분류 ${totalMids}개: ${[...col2Items, ...extraMids].map((m) => m.name).join(", ")}`);
-
-    // ── 5) 각 중분류 hover → 소분류(3열) 전체 수집 ──
-    for (const mid of col2Items) {
-      // 대분류에 먼저 hover (2열 유지)
+    // 각 중분류 hover → 소분류 수집
+    for (const mid of col2.items) {
+      // L자 이동: 대분류 y → 오른쪽 → 중분류 y
       await page.mouse.move(parent.cx, parent.cy, { steps: 3 });
-      await new Promise((r) => setTimeout(r, 400));
-
-      // 대분류 → 중분류: L자 이동 (오른쪽으로 먼저, 그 다음 위/아래)
-      // 직선 이동하면 다른 대분류를 지나가서 메뉴가 바뀜!
-      // step1: 대분류 y좌표 유지하면서 2열 x좌표로 이동 (오른쪽으로)
-      await page.mouse.move(mid.cx, parent.cy, { steps: 3 });
+      await new Promise((r) => setTimeout(r, 300));
+      await page.mouse.move(mid.cx, parent.cy, { steps: 2 });
       await new Promise((r) => setTimeout(r, 100));
-      // step2: 2열 x좌표 유지하면서 중분류 y좌표로 이동 (위/아래로)
       await page.mouse.move(mid.cx, mid.cy, { steps: 3 });
       await new Promise((r) => setTimeout(r, 500 + Math.random() * 300));
 
-      // hover 후 3열(소분류) 전체 수집
-      const afterMidHover = await getVisibleCategoryLinks(page);
-      const col3All = getThirdColumn(afterMidHover, col2MaxX);
+      // 3열(소분류) 수집
+      const afterMidHover = await getVisibleLinks(page);
+      const col3Links = afterMidHover.filter((l) => l.x > col2.maxX && isValidSub(l, topIdSet) && !globalSeenIds.has(l.id));
 
-      // 대분류/중분류 id 제외, 이미 수집된 것 제외, 제외 목록 필터
-      const newSmalls = col3All.filter((s) => {
-        if (!s.id || topIdSet.has(s.id) || seenIds.has(s.id)) return false;
-        if (EXCLUDE_NAMES.some((ex) => s.name.includes(ex))) return false;
-        if (TOP_NAMES.some((tn) => s.name === tn)) return false;
-        return true;
-      });
+      // 3열만 추출 (x 그룹핑)
+      const col3 = extractColumn(col3Links);
+      const newSmalls = col3.items.filter((s) => !globalSeenIds.has(s.id));
 
       for (const small of newSmalls) {
-        seenIds.add(small.id);
-        allCategories.push({
-          level: 3, ...small, parentId: mid.id, parentName: mid.name,
-        });
+        globalSeenIds.add(small.id);
+        allCategories.push({ level: 3, ...small, parentId: mid.id, parentName: mid.name });
       }
 
       if (newSmalls.length > 0) {
@@ -338,7 +252,6 @@ async function main() {
       }
     }
 
-    // 다음 대분류 전에 살짝 대기
     await new Promise((r) => setTimeout(r, 200 + Math.random() * 300));
   }
 
@@ -358,7 +271,7 @@ async function main() {
     console.log(`  레벨 ${level} (${label}): ${count}개`);
   }
 
-  // 트리 출력: 카테고리명 옆에 바로 URL
+  // 트리 출력
   console.log("\n[카테고리 트리]");
   const level1 = allCategories.filter((c) => c.level === 1);
 
@@ -392,9 +305,7 @@ async function main() {
   for (const cat of allCategories) {
     const safeName = cat.name.replace(/"/g, '""');
     const safeParent = (cat.parentName || "").replace(/"/g, '""');
-    csvLines.push(
-      `${cat.level},${cat.id},"${safeName}",${cat.url},${cat.parentId || ""},"${safeParent}"`
-    );
+    csvLines.push(`${cat.level},${cat.id},"${safeName}",${cat.url},${cat.parentId || ""},"${safeParent}"`);
   }
   const csvPath = join(DATA_DIR, "categories.csv");
   writeFileSync(csvPath, "\uFEFF" + csvLines.join("\n"), "utf-8");
