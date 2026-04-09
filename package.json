@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "crawl": "node src/crawl.js",
+    "categories": "node src/categories-crawl.js",
     "schedule": "node src/scheduler.js",
     "view": "node src/view.js"
   },
