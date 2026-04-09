@@ -97,12 +97,12 @@ async function main() {
   await page.goto("https://www.coupang.com", { waitUntil: "load", timeout: 30000 });
   await new Promise((r) => setTimeout(r, 3000));
 
-  // ── 2) 카테고리 메뉴 열기 ──
-  // 파란 배경 햄버거(≡) + "카테고리" 버튼 클릭
-  console.log("카테고리 메뉴 열기...");
+  // ── 2) 카테고리 메뉴 열기 (마우스오버) ──
+  // 파란 햄버거(≡) + "카테고리" 영역에 hover하면 대분류가 열림
+  console.log("카테고리 햄버거 메뉴에 마우스오버...");
 
-  const clicked = await page.evaluate(() => {
-    // 전략 1: "카테고리" 텍스트를 포함하는 요소 중 가장 작은(정확한) 것
+  // "카테고리" 요소 위치 찾기
+  const menuPos = await page.evaluate(() => {
     const allEls = document.querySelectorAll("*");
     let bestMatch = null;
     let bestArea = Infinity;
@@ -114,55 +114,34 @@ async function main() {
       const text = el.textContent?.trim();
       if (!text) continue;
 
-      // "카테고리"를 포함하고, 다른 긴 텍스트는 아닌 것
       if (text.includes("카테고리") && text.length < 15) {
         const area = rect.width * rect.height;
         if (area < bestArea) {
           bestArea = area;
-          bestMatch = { el, text, rect };
+          bestMatch = {
+            x: Math.round(rect.x + rect.width / 2),
+            y: Math.round(rect.y + rect.height / 2),
+            text,
+          };
         }
       }
     }
-
-    if (bestMatch) {
-      bestMatch.el.click();
-      return {
-        method: "text-match",
-        text: bestMatch.text,
-        x: Math.round(bestMatch.rect.x),
-        y: Math.round(bestMatch.rect.y),
-        w: Math.round(bestMatch.rect.width),
-        h: Math.round(bestMatch.rect.height),
-      };
-    }
-
-    // 전략 2: class에 hamburger/category 포함
-    for (const el of document.querySelectorAll("a, button, div")) {
-      const cls = (el.className?.toString() || "").toLowerCase();
-      if (cls.includes("hamburger") || cls.includes("category-btn") || cls.includes("all-menu")) {
-        const rect = el.getBoundingClientRect();
-        if (rect.width > 0 && rect.y < 100) {
-          el.click();
-          return { method: "class-match", cls: cls.slice(0, 50), x: Math.round(rect.x), y: Math.round(rect.y) };
-        }
-      }
-    }
-
-    return null;
+    return bestMatch;
   });
 
-  if (clicked) {
-    console.log(`  클릭 성공 (${clicked.method}): "${clicked.text || clicked.cls}" (${clicked.x}, ${clicked.y})`);
+  if (menuPos) {
+    console.log(`  "카테고리" 요소 발견: (${menuPos.x}, ${menuPos.y})`);
+    await page.mouse.move(menuPos.x, menuPos.y, { steps: 5 });
   } else {
-    // 최후 수단: 스크린샷 기준 좌표 직접 클릭 (파란 햄버거 버튼 영역)
-    console.log("  자동 탐지 실패 — 좌상단 햄버거 버튼 좌표 직접 클릭");
-    await page.mouse.click(45, 55);
+    // fallback: 좌상단 햄버거 버튼 좌표
+    console.log("  자동 탐지 실패 — 좌상단 좌표(45, 55)로 hover");
+    await page.mouse.move(45, 55, { steps: 5 });
   }
 
-  // 메뉴 애니메이션 대기
+  // hover 후 메뉴 열리는 애니메이션 대기
   await new Promise((r) => setTimeout(r, 2000));
 
-  // 메뉴가 열렸는지 확인: 대분류 이름이 보이는지
+  // 메뉴가 열렸는지 확인
   const menuCheck = await page.evaluate((topNames) => {
     const links = document.querySelectorAll("a");
     for (const link of links) {
@@ -177,8 +156,10 @@ async function main() {
   }, TOP_NAMES);
 
   if (!menuCheck) {
-    console.log("  ⚠️ 메뉴가 안 열린 것 같습니다. 한번 더 클릭 시도...");
-    await page.mouse.click(45, 55);
+    console.log("  ⚠️ 메뉴가 안 열림 — 재시도 (클릭 후 hover)...");
+    await page.mouse.click(menuPos?.x || 45, menuPos?.y || 55);
+    await new Promise((r) => setTimeout(r, 1000));
+    await page.mouse.move(menuPos?.x || 45, menuPos?.y || 55, { steps: 3 });
     await new Promise((r) => setTimeout(r, 2000));
   }
 
