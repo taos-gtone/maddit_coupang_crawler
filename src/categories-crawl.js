@@ -82,7 +82,7 @@ function extractSubCategories(html, parentId) {
   return [...categories.values()];
 }
 
-/** 페이지 접속 후 HTML에서 하위 카테고리 추출 */
+/** 페이지 접속 후 사이드바/네비 영역에서만 하위 카테고리 추출 */
 async function crawlSubCategories(page, parentUrl, parentId) {
   try {
     await page.goto(parentUrl, { waitUntil: "load", timeout: 20000 });
@@ -96,6 +96,53 @@ async function crawlSubCategories(page, parentUrl, parentId) {
     await page.evaluate(() => window.scrollTo(0, 0));
     await new Promise((r) => setTimeout(r, 500));
 
+    // DOM에서 사이드바/네비 영역만 먼저 시도
+    const domSubs = await page.evaluate((pId) => {
+      const results = [];
+      // 사이드바/필터/네비게이션 영역 셀렉터
+      const containers = document.querySelectorAll(
+        "[class*='side'] , [class*='Side'], [class*='lnb'], [class*='Lnb'], " +
+        "[class*='filter'], [class*='Filter'], [class*='nav-category'], " +
+        "[class*='category-list'], [class*='CategoryList'], [class*='sub-category'], " +
+        "[class*='breadcrumb'], [class*='Breadcrumb']"
+      );
+
+      const links = new Set();
+      for (const container of containers) {
+        container.querySelectorAll("a[href*='/np/categories/']").forEach((a) => links.add(a));
+      }
+
+      // 사이드바가 못 찾으면 전체에서 찾되, 다른 대분류 ID는 제외
+      if (links.size === 0) {
+        document.querySelectorAll("a[href*='/np/categories/']").forEach((a) => links.add(a));
+      }
+
+      for (const link of links) {
+        const href = link.getAttribute("href") || "";
+        const idMatch = href.match(/categories\/(\d+)/);
+        if (!idMatch || idMatch[1] === pId) continue;
+
+        const name = link.textContent?.replace(/\s+/g, " ").trim();
+        if (!name || name.length < 2 || name.length > 40) continue;
+
+        let url = href;
+        if (url.startsWith("/")) url = "https://www.coupang.com" + url;
+
+        results.push({ id: idMatch[1], name, url });
+      }
+
+      // 중복 제거
+      const seen = new Set();
+      return results.filter((r) => {
+        if (seen.has(r.id)) return false;
+        seen.add(r.id);
+        return true;
+      });
+    }, parentId);
+
+    if (domSubs.length > 0) return domSubs;
+
+    // DOM 실패 시 HTML regex fallback
     const html = await page.content();
     return extractSubCategories(html, parentId);
   } catch (err) {
@@ -151,13 +198,17 @@ async function main() {
 
     const subs = await crawlSubCategories(page, parent.url, parent.id);
 
-    // 대분류 페이지에서 찾은 링크 중 의미 있는 것만 필터
-    // (광고, 기획전 등 제외 — 카테고리 ID가 있는 것만)
-    const validSubs = subs.filter((s) => s.id && s.name.length <= 30);
+    // 다른 대분류 이름/ID 필터 + 의미 없는 링크 제외
+    const topIds = new Set(TOP_CATEGORIES.map((t) => t.id));
+    const topNames = new Set(TOP_CATEGORIES.map((t) => t.name));
+    const validSubs = subs.filter((s) => {
+      if (!s.id || s.name.length > 30) return false;
+      if (topIds.has(s.id)) return false;          // 다른 대분류 id
+      if (topNames.has(s.name)) return false;       // 다른 대분류 이름
+      return true;
+    });
 
     for (const sub of validSubs) {
-      // 이미 대분류에 있는 id면 건너뛰기
-      if (TOP_CATEGORIES.find((t) => t.id === sub.id)) continue;
       // 이미 수집된 것 건너뛰기
       if (allCategories.find((c) => c.id === sub.id)) continue;
 
@@ -242,24 +293,24 @@ async function main() {
     console.log(`  레벨 ${level} (${label}): ${count}개`);
   }
 
-  // 트리 형태 출력
+  // 트리 형태 출력 (들여쓰기로 계층 표현)
   console.log("\n[카테고리 트리]");
   const level1 = sorted.filter((c) => c.level === 1);
 
   for (const top of level1) {
-    console.log(`\n  [대분류] ${top.name}`);
-    console.log(`           ${top.url}`);
+    console.log(`${top.name}`);
+    console.log(`  ${top.url}`);
 
     const mids = sorted.filter((c) => c.level === 2 && c.parentId === top.id);
     for (const mid of mids) {
-      console.log(`    [중분류] ${mid.name}`);
-      console.log(`             ${mid.url}`);
+      console.log(`\t${mid.name}`);
+      console.log(`\t  ${mid.url}`);
 
       if (opts.depth >= 3) {
         const smalls = sorted.filter((c) => c.level === 3 && c.parentId === mid.id);
         for (const small of smalls) {
-          console.log(`      [소분류] ${small.name}`);
-          console.log(`               ${small.url}`);
+          console.log(`\t\t${small.name}`);
+          console.log(`\t\t  ${small.url}`);
         }
       }
     }
