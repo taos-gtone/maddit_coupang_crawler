@@ -208,31 +208,42 @@ async function main() {
     const rightLinks = afterHover.filter((l) => l.x > col1MaxX && isValidSub(l, topIdSet));
     const col2 = extractColumn(rightLinks);
 
-    // 2열에서 보이는 항목의 부모 컨테이너를 찾고,
-    // 그 안의 모든 카테고리 링크를 수집 (화면 밖 잘린 것 포함)
+    // DIV.depth (overflow:hidden)로 잘린 중분류 수집
+    // → overflow를 임시로 visible로 변경 → UL.sdl 안의 모든 링크 수집 → 원복
     if (col2.items.length > 0) {
       const extraItems = await page.evaluate(({ sampleId }) => {
-        // 이미 찾은 2열 항목 중 하나의 <a> 태그를 기준으로 부모 컨테이너 찾기
         const sampleLink = document.querySelector(`a[href*='/np/categories/${sampleId}']`);
         if (!sampleLink) return [];
 
-        // 부모를 올라가면서 카테고리 링크를 여러 개 담고 있는 컨테이너 찾기
-        let container = sampleLink.parentElement;
-        while (container) {
-          const links = container.querySelectorAll("a[href*='/np/categories/']");
-          // 컨테이너가 2개 이상 카테고리 링크를 가지고 있고,
-          // 너무 크지 않은 것 (body 전체가 아닌)
-          if (links.length >= 2 && links.length <= 30 && container.tagName !== "BODY") {
-            break;
+        // UL.sdl 찾기 (중분류 리스트 컨테이너)
+        let ul = sampleLink.closest("ul.sdl") || sampleLink.closest("ul");
+
+        // DIV.depth 찾기 (overflow:hidden 컨테이너)
+        let depthDiv = sampleLink.closest("div.depth") || sampleLink.closest("div");
+        // 부모를 올라가며 overflow:hidden인 것 찾기
+        if (!depthDiv || getComputedStyle(depthDiv).overflow !== "hidden") {
+          let p = sampleLink.parentElement;
+          while (p && p.tagName !== "BODY") {
+            if (getComputedStyle(p).overflow === "hidden" || getComputedStyle(p).overflowY === "hidden") {
+              depthDiv = p;
+              break;
+            }
+            p = p.parentElement;
           }
-          container = container.parentElement;
         }
 
-        if (!container) return [];
+        // overflow:hidden을 임시로 해제
+        const origOverflow = depthDiv ? depthDiv.style.overflow : "";
+        const origHeight = depthDiv ? depthDiv.style.height : "";
+        if (depthDiv) {
+          depthDiv.style.overflow = "visible";
+          depthDiv.style.height = "auto";
+        }
 
-        // 이 컨테이너 안의 모든 카테고리 링크 수집
+        // UL 안의 모든 카테고리 링크 수집
+        const searchRoot = ul || depthDiv || sampleLink.parentElement;
         const found = [];
-        const links = container.querySelectorAll("a[href*='/np/categories/']");
+        const links = searchRoot.querySelectorAll("a[href*='/np/categories/']");
         for (const a of links) {
           const href = a.getAttribute("href") || "";
           const idMatch = href.match(/categories\/(\d+)/);
@@ -249,6 +260,13 @@ async function main() {
             cy: Math.round(rect.y + rect.height / 2),
           });
         }
+
+        // overflow 원복
+        if (depthDiv) {
+          depthDiv.style.overflow = origOverflow;
+          depthDiv.style.height = origHeight;
+        }
+
         return found;
       }, { sampleId: col2.items[0].id });
 
