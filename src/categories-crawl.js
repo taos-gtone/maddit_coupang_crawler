@@ -211,11 +211,7 @@ async function main() {
     // 2열 메뉴 컨테이너의 DOM 스크롤로 숨겨진 중분류 추가 수집
     // (마우스 휠 스크롤은 다른 대분류를 건드려서 사용 안 함)
     if (col2.items.length > 0) {
-      const extraItems = await page.evaluate((col2MinX, col2MaxX, colMaxX1) => {
-        // 2열 영역에 있는 링크의 부모 스크롤 컨테이너 찾기
-        const link = document.querySelector(`a[href*='/np/categories/']`);
-        if (!link) return [];
-
+      const extraItems = await page.evaluate(({ col2MinX, col2MaxX }) => {
         // 2열 영역의 스크롤 가능한 부모 찾기
         const allLinks = document.querySelectorAll("a[href*='/np/categories/']");
         let scrollContainer = null;
@@ -265,7 +261,7 @@ async function main() {
         scrollContainer.scrollTop = origScroll;
 
         return [...found.values()];
-      }, col2.minX, col2.maxX, col1MaxX);
+      }, { col2MinX: col2.minX, col2MaxX: col2.maxX });
 
       // 추가 발견된 항목 합치기
       if (extraItems.length > 0) {
