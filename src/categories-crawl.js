@@ -30,7 +30,7 @@ const EXCLUDE_NAMES = [
   "입점/판매 신청", "입점/판매신청",
 ];
 
-/** 현재 보이는 카테고리 링크 전부 수집 */
+/** 현재 보이는 카테고리 링크 전부 수집 (보이는 것 + 숨겨진 것) */
 async function getVisibleCategoryLinks(page) {
   return page.evaluate(() => {
     const items = [];
@@ -38,7 +38,10 @@ async function getVisibleCategoryLinks(page) {
 
     for (const link of links) {
       const rect = link.getBoundingClientRect();
-      if (rect.width === 0 || rect.height === 0) continue;
+      // 완전히 없는 것만 제외 (크기가 0인 것)
+      // 화면 밖이지만 DOM에 있는 것은 포함 (메뉴 스크롤 영역)
+      const visible = rect.width > 0 && rect.height > 0;
+      if (!visible) continue;
 
       const name = link.textContent?.replace(/\s+/g, " ").trim();
       const href = link.getAttribute("href") || "";
@@ -56,6 +59,41 @@ async function getVisibleCategoryLinks(page) {
         y: Math.round(rect.y),
         cx: Math.round(rect.x + rect.width / 2),
         cy: Math.round(rect.y + rect.height / 2),
+      });
+    }
+    return items;
+  });
+}
+
+/** DOM에서 보이지 않는 카테고리도 포함하여 수집 (display:none 포함) */
+async function getAllCategoryLinksFromDOM(page) {
+  return page.evaluate(() => {
+    const items = [];
+    const links = document.querySelectorAll("a[href*='/np/categories/']");
+
+    for (const link of links) {
+      const name = link.textContent?.replace(/\s+/g, " ").trim();
+      const href = link.getAttribute("href") || "";
+      if (!name || name.length < 2 || name.length > 40) continue;
+
+      const idMatch = href.match(/categories\/(\d+)/);
+      let url = href;
+      if (url.startsWith("/")) url = "https://www.coupang.com" + url;
+
+      // 부모 요소의 클래스로 어느 열인지 추정
+      const parentClasses = [];
+      let p = link.parentElement;
+      for (let i = 0; i < 5 && p; i++) {
+        if (p.className) parentClasses.push(p.className.toString());
+        p = p.parentElement;
+      }
+      const classStr = parentClasses.join(" ").toLowerCase();
+
+      items.push({
+        name,
+        url,
+        id: idMatch ? idMatch[1] : "",
+        classHint: classStr.slice(0, 100),
       });
     }
     return items;
@@ -238,16 +276,41 @@ async function main() {
       });
     }
 
-    console.log(`    중분류 ${col2Items.length}개: ${col2Items.map((m) => m.name).join(", ")}`);
+    // DOM 전체에서 누락된 중분류 보완 (화면 밖/스크롤 영역)
+    const allDomLinks = await getAllCategoryLinksFromDOM(page);
+    const existingMidIds = new Set(col2Items.map((m) => m.id));
+    const extraMids = allDomLinks.filter((l) => {
+      if (!l.id || existingMidIds.has(l.id) || topIdSet.has(l.id) || seenIds.has(l.id)) return false;
+      if (EXCLUDE_NAMES.some((ex) => l.name.includes(ex))) return false;
+      if (TOP_NAMES.some((tn) => l.name === tn)) return false;
+      // 2열에 해당하는 DOM 클래스 힌트가 있는 것만
+      return true;
+    });
+
+    // 추가된 것들도 allCategories와 col2Items에 포함
+    // (단, hover 좌표가 없으므로 소분류 수집은 불가)
+    for (const extra of extraMids) {
+      if (seenIds.has(extra.id)) continue;
+      seenIds.add(extra.id);
+      const cat = { level: 2, ...extra, x: 0, y: 0, cx: 0, cy: 0, parentId: parent.id, parentName: parent.name };
+      allCategories.push(cat);
+    }
+
+    const totalMids = col2Items.length + extraMids.length;
+    console.log(`    중분류 ${totalMids}개: ${[...col2Items, ...extraMids].map((m) => m.name).join(", ")}`);
 
     // ── 5) 각 중분류 hover → 소분류(3열) 전체 수집 ──
-    // 먼저 대분류에 다시 hover해서 2열을 안정적으로 유지
     for (const mid of col2Items) {
-      // 대분류 → 중분류 순서로 hover (메뉴가 닫히지 않도록)
+      // 대분류에 먼저 hover (2열 유지)
       await page.mouse.move(parent.cx, parent.cy, { steps: 3 });
-      await new Promise((r) => setTimeout(r, 300));
+      await new Promise((r) => setTimeout(r, 400));
 
-      // 중분류에 hover
+      // 대분류 → 중분류: L자 이동 (오른쪽으로 먼저, 그 다음 위/아래)
+      // 직선 이동하면 다른 대분류를 지나가서 메뉴가 바뀜!
+      // step1: 대분류 y좌표 유지하면서 2열 x좌표로 이동 (오른쪽으로)
+      await page.mouse.move(mid.cx, parent.cy, { steps: 3 });
+      await new Promise((r) => setTimeout(r, 100));
+      // step2: 2열 x좌표 유지하면서 중분류 y좌표로 이동 (위/아래로)
       await page.mouse.move(mid.cx, mid.cy, { steps: 3 });
       await new Promise((r) => setTimeout(r, 500 + Math.random() * 300));
 
