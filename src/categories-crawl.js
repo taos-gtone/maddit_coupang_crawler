@@ -97,41 +97,92 @@ async function main() {
   await page.goto("https://www.coupang.com", { waitUntil: "load", timeout: 30000 });
   await new Promise((r) => setTimeout(r, 3000));
 
-  // ── 2) 카테고리 메뉴 열기 (햄버거 클릭) ──
+  // ── 2) 카테고리 메뉴 열기 ──
+  // 파란 배경 햄버거(≡) + "카테고리" 버튼 클릭
   console.log("카테고리 메뉴 열기...");
 
-  // 햄버거 or 카테고리 텍스트 클릭
   const clicked = await page.evaluate(() => {
-    // "카테고리" 텍스트가 있는 클릭 가능한 요소
-    const all = document.querySelectorAll("a, button, div, span");
-    for (const el of all) {
-      if (el.offsetWidth === 0) continue;
+    // 전략 1: "카테고리" 텍스트를 포함하는 요소 중 가장 작은(정확한) 것
+    const allEls = document.querySelectorAll("*");
+    let bestMatch = null;
+    let bestArea = Infinity;
+
+    for (const el of allEls) {
+      const rect = el.getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) continue;
+
       const text = el.textContent?.trim();
-      const cls = el.className?.toString() || "";
-      if (
-        text === "카테고리" ||
-        cls.includes("hamburger") ||
-        cls.includes("Hamburger")
-      ) {
-        const rect = el.getBoundingClientRect();
-        // 좌상단 영역에 있는 것만 (상단 메뉴)
-        if (rect.x < 200 && rect.y < 80) {
-          el.click();
-          return { tag: el.tagName, text, x: rect.x, y: rect.y };
+      if (!text) continue;
+
+      // "카테고리"를 포함하고, 다른 긴 텍스트는 아닌 것
+      if (text.includes("카테고리") && text.length < 15) {
+        const area = rect.width * rect.height;
+        if (area < bestArea) {
+          bestArea = area;
+          bestMatch = { el, text, rect };
         }
       }
     }
+
+    if (bestMatch) {
+      bestMatch.el.click();
+      return {
+        method: "text-match",
+        text: bestMatch.text,
+        x: Math.round(bestMatch.rect.x),
+        y: Math.round(bestMatch.rect.y),
+        w: Math.round(bestMatch.rect.width),
+        h: Math.round(bestMatch.rect.height),
+      };
+    }
+
+    // 전략 2: class에 hamburger/category 포함
+    for (const el of document.querySelectorAll("a, button, div")) {
+      const cls = (el.className?.toString() || "").toLowerCase();
+      if (cls.includes("hamburger") || cls.includes("category-btn") || cls.includes("all-menu")) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width > 0 && rect.y < 100) {
+          el.click();
+          return { method: "class-match", cls: cls.slice(0, 50), x: Math.round(rect.x), y: Math.round(rect.y) };
+        }
+      }
+    }
+
     return null;
   });
 
   if (clicked) {
-    console.log(`  클릭 성공: <${clicked.tag}> "${clicked.text}" (${clicked.x}, ${clicked.y})`);
+    console.log(`  클릭 성공 (${clicked.method}): "${clicked.text || clicked.cls}" (${clicked.x}, ${clicked.y})`);
   } else {
-    console.log("  자동 클릭 실패 — 좌상단 영역 직접 클릭");
-    await page.mouse.click(45, 42);
+    // 최후 수단: 스크린샷 기준 좌표 직접 클릭 (파란 햄버거 버튼 영역)
+    console.log("  자동 탐지 실패 — 좌상단 햄버거 버튼 좌표 직접 클릭");
+    await page.mouse.click(45, 55);
   }
 
+  // 메뉴 애니메이션 대기
   await new Promise((r) => setTimeout(r, 2000));
+
+  // 메뉴가 열렸는지 확인: 대분류 이름이 보이는지
+  const menuCheck = await page.evaluate((topNames) => {
+    const links = document.querySelectorAll("a");
+    for (const link of links) {
+      const rect = link.getBoundingClientRect();
+      if (rect.width === 0) continue;
+      const text = link.textContent?.trim();
+      if (topNames.some((n) => text === n || text?.includes(n))) {
+        return true;
+      }
+    }
+    return false;
+  }, TOP_NAMES);
+
+  if (!menuCheck) {
+    console.log("  ⚠️ 메뉴가 안 열린 것 같습니다. 한번 더 클릭 시도...");
+    await page.mouse.click(45, 55);
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+
+  console.log("  메뉴 열림 확인 완료");
 
   // ── 3) 1열(대분류) 확인 ──
   console.log("\n[1단계] 대분류 확인...");
