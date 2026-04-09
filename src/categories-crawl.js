@@ -203,17 +203,36 @@ async function main() {
     await page.mouse.move(parent.cx, parent.cy, { steps: 5 });
     await new Promise((r) => setTimeout(r, 800 + Math.random() * 400));
 
-    // 보이는 링크 수집
-    const afterHover = await getVisibleLinks(page);
+    // 보이는 링크 수집 + 2열 스크롤하여 숨겨진 중분류도 수집
+    let afterHover = await getVisibleLinks(page);
+    let rightLinks = afterHover.filter((l) => l.x > col1MaxX && isValidSub(l, topIdSet));
+    let col2 = extractColumn(rightLinks);
 
-    // 1열 오른쪽 + 유효한 것만
-    const rightLinks = afterHover.filter((l) => l.x > col1MaxX && isValidSub(l, topIdSet));
+    // 2열 영역 스크롤: 메뉴 패널 안에서 아래로 스크롤하여 추가 항목 수집
+    if (col2.items.length > 0) {
+      const col2BottomItem = col2.items.reduce((a, b) => a.cy > b.cy ? a : b);
+      // 2열 영역 안에서 마우스 휠로 스크롤
+      await page.mouse.move(col2BottomItem.cx, col2BottomItem.cy, { steps: 3 });
+      await new Promise((r) => setTimeout(r, 200));
+      await page.mouse.wheel(0, 300);
+      await new Promise((r) => setTimeout(r, 500));
 
-    // 2열 추출
-    const col2 = extractColumn(rightLinks);
+      // 스크롤 후 새로 보이는 링크 추가 수집
+      const afterScroll = await getVisibleLinks(page);
+      const scrolledRight = afterScroll.filter((l) => l.x > col1MaxX && isValidSub(l, topIdSet));
+      const scrolledCol2 = extractColumn(scrolledRight);
 
-    // 2열이 아닌 것 = 3열 후보 (기본 선택된 중분류의 소분류가 이미 보임)
-    const col3Candidates = rightLinks.filter((l) => l.x > col2.maxX);
+      // 기존 + 스크롤 후 합치기 (중복 제거)
+      const mergedMap = new Map();
+      for (const item of [...col2.items, ...scrolledCol2.items]) {
+        if (!mergedMap.has(item.id)) mergedMap.set(item.id, item);
+      }
+      col2 = { ...col2, items: [...mergedMap.values()] };
+
+      // 대분류에 다시 hover (스크롤로 메뉴가 흐트러졌을 수 있음)
+      await page.mouse.move(parent.cx, parent.cy, { steps: 3 });
+      await new Promise((r) => setTimeout(r, 500));
+    }
 
     // 중분류 저장
     const midItems = col2.items.filter((m) => !globalSeenIds.has(m.id));
