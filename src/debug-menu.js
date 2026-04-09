@@ -115,6 +115,68 @@ async function main() {
   });
   writeFileSync(join(DATA_DIR, "container-chain.json"), JSON.stringify(containerInfo, null, 2), "utf-8");
 
+  // "패션의류/잡화"의 LI 안에 있는 모든 카테고리 링크 덤프
+  console.log("\n=== LI.fashion 내부 전체 링크 ===");
+  const fashionLinks = await page.evaluate(() => {
+    const fashionLi = document.querySelector("li.fashion");
+    if (!fashionLi) return { found: false };
+
+    const allLinks = [];
+    fashionLi.querySelectorAll("a[href*='/np/categories/']").forEach((a) => {
+      const href = a.getAttribute("href") || "";
+      const name = a.textContent?.replace(/\s+/g, " ").trim();
+      const rect = a.getBoundingClientRect();
+      const parent = a.closest("ul");
+      allLinks.push({
+        name,
+        href,
+        x: Math.round(rect.x),
+        y: Math.round(rect.y),
+        w: Math.round(rect.width),
+        h: Math.round(rect.height),
+        parentUlClass: parent?.className,
+        parentUlChildCount: parent?.children.length,
+      });
+    });
+
+    // UL 목록도 확인
+    const uls = [];
+    fashionLi.querySelectorAll("ul").forEach((ul) => {
+      const rect = ul.getBoundingClientRect();
+      uls.push({
+        class: ul.className,
+        childCount: ul.children.length,
+        w: Math.round(rect.width),
+        h: Math.round(rect.height),
+        links: ul.querySelectorAll("a[href*='/np/categories/']").length,
+      });
+    });
+
+    return {
+      found: true,
+      totalLinks: allLinks.length,
+      links: allLinks,
+      uls,
+      outerHTML: fashionLi.innerHTML.slice(0, 3000),
+    };
+  });
+
+  if (fashionLinks.found) {
+    console.log(`  총 링크: ${fashionLinks.totalLinks}개`);
+    console.log("\n  UL 목록:");
+    fashionLinks.uls.forEach((ul, i) => {
+      console.log(`    [${i}] UL.${ul.class} — children:${ul.childCount} links:${ul.links} ${ul.w}x${ul.h}`);
+    });
+    console.log("\n  링크 목록:");
+    fashionLinks.links.forEach((l, i) => {
+      console.log(`    ${i + 1}. "${l.name}" x:${l.x} y:${l.y} ${l.w}x${l.h} (UL.${l.parentUlClass})`);
+    });
+    writeFileSync(join(DATA_DIR, "fashion-li.html"), fashionLinks.outerHTML, "utf-8");
+    console.log("\n  HTML 저장: data/debug/fashion-li.html");
+  } else {
+    console.log("  li.fashion 못 찾음");
+  }
+
   // "여성패션" 링크와 "럭셔리패션" 링크의 DOM 위치 비교
   console.log("\n=== 여성패션 vs 럭셔리패션 DOM 구조 ===");
   const domInfo = await page.evaluate(() => {
