@@ -1,14 +1,13 @@
 /**
- * 쿠팡 전체 카테고리 트리 수집 v3
+ * 쿠팡 전체 카테고리 트리 수집 v4
  *
- * 전략 (3가지 동시 탐색):
- *   A) 페이지 내 <script> 태그의 JSON 데이터에서 카테고리 추출
- *   B) 좌측 사이드바 각 항목에 마우스 hover → 서브 메뉴 추출
- *   C) 각 대분류 페이지 접속 → HTML에서 모든 카테고리 링크 추출
+ * 전략: 좌측 카테고리 메뉴의 3열 구조를 hover로 탐색
+ *   1열(대분류): 패션의류/잡화, 뷰티, 출산/유아동, 식품...
+ *   2열(중분류): 대분류 hover 시 나타남
+ *   3열(소분류): 중분류 hover 시 나타남
  *
  * 사용법:
  *   node src/categories-crawl.js
- *   node src/categories-crawl.js --depth 3
  */
 import { chromium } from "playwright";
 import { writeFileSync, mkdirSync, existsSync } from "fs";
@@ -18,55 +17,7 @@ import { fileURLToPath } from "url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = join(__dirname, "..", "data");
 
-function parseArgs() {
-  const args = process.argv.slice(2);
-  const opts = { depth: 2 };
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--depth" && args[i + 1]) opts.depth = parseInt(args[++i], 10);
-  }
-  return opts;
-}
-
-/** HTML 원본에서 /np/categories/ 링크 + 주변 텍스트 추출 */
-function extractLinksFromHtml(html) {
-  const categories = new Map();
-
-  // 패턴: <a href="/np/categories/숫자..." ...>텍스트</a>
-  const pattern = /<a\s[^>]*href="((?:https?:\/\/www\.coupang\.com)?\/np\/categories\/(\d+))[^"]*"[^>]*>([\s\S]*?)<\/a>/gi;
-  let m;
-  while ((m = pattern.exec(html)) !== null) {
-    const id = m[2];
-    if (categories.has(id)) continue;
-
-    let url = m[1];
-    if (url.startsWith("/")) url = "https://www.coupang.com" + url;
-
-    // <a>태그 내부 텍스트 (HTML 태그 제거)
-    const name = m[3].replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
-
-    if (name && name.length >= 2 && name.length < 80) {
-      categories.set(id, { id, name, url });
-    }
-  }
-
-  // 이름 못 찾은 것들: title/alt 속성에서 시도
-  const titlePattern = /href="(?:https?:\/\/www\.coupang\.com)?\/np\/categories\/(\d+)[^"]*"[^>]*(?:title|alt)="([^"]{2,60})"/gi;
-  while ((m = titlePattern.exec(html)) !== null) {
-    const id = m[1];
-    if (categories.has(id)) continue;
-    categories.set(id, {
-      id,
-      name: m[2],
-      url: `https://www.coupang.com/np/categories/${id}`,
-    });
-  }
-
-  return categories;
-}
-
 async function main() {
-  const opts = parseArgs();
-
   let browser;
   try {
     browser = await chromium.connectOverCDP("http://localhost:9222");
@@ -81,272 +32,290 @@ async function main() {
   if (!existsSync(DATA_DIR)) mkdirSync(DATA_DIR, { recursive: true });
 
   console.log("=".repeat(60));
-  console.log("쿠팡 전체 카테고리 수집 v3");
-  console.log(`탐색 깊이: ${opts.depth}단계`);
+  console.log("쿠팡 전체 카테고리 수집 v4 (3열 메뉴 hover)");
   console.log("=".repeat(60));
 
-  // 전체 결과
-  const allCategories = new Map(); // id → { id, name, url, level, parentId, parentName }
-
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // 방법 A) <script> 태그 내 JSON 데이터 탐색
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  console.log("\n[방법 A] 페이지 내 JSON 데이터 탐색...");
+  // ── 1) 쿠팡 메인 접속 ──
+  console.log("\n쿠팡 메인 접속...");
   await page.goto("https://www.coupang.com", { waitUntil: "load", timeout: 30000 });
   await new Promise((r) => setTimeout(r, 3000));
 
-  const scriptData = await page.evaluate(() => {
-    const categories = [];
-    // 모든 <script> 태그에서 카테고리 관련 JSON 탐색
-    const scripts = document.querySelectorAll("script");
-    for (const script of scripts) {
-      const text = script.textContent || "";
-      // "categories" 또는 "categoryId" 가 포함된 JSON 찾기
-      if (text.includes("categor") && text.length > 100) {
-        // JSON 객체 추출 시도
-        const jsonMatches = text.match(/\{[^{}]*"categor[^{}]*\}/g);
-        if (jsonMatches) {
-          for (const jsonStr of jsonMatches.slice(0, 50)) {
-            try {
-              const obj = JSON.parse(jsonStr);
-              if (obj.categoryId || obj.id) {
-                categories.push(obj);
-              }
-            } catch {}
-          }
-        }
+  // ── 2) 카테고리 메뉴 열기 ──
+  console.log("카테고리 메뉴 열기...");
 
-        // 배열 형태 탐색
-        const arrMatches = text.match(/\[[^\[\]]*"categor[^\[\]]*\]/g);
-        if (arrMatches) {
-          for (const arrStr of arrMatches.slice(0, 20)) {
-            try {
-              const arr = JSON.parse(arrStr);
-              if (Array.isArray(arr)) categories.push(...arr);
-            } catch {}
-          }
-        }
-      }
-    }
-
-    // window 객체에 카테고리 데이터가 있을 수 있음
-    try {
-      const keys = Object.keys(window);
-      for (const key of keys) {
-        const val = window[key];
-        if (val && typeof val === "object" && JSON.stringify(val).includes("categor")) {
-          categories.push({ _windowKey: key, data: val });
-        }
-      }
-    } catch {}
-
-    return categories;
-  });
-
-  if (scriptData.length > 0) {
-    console.log(`  JSON 데이터 ${scriptData.length}개 발견`);
-    writeFileSync(
-      join(DATA_DIR, "categories-script-data.json"),
-      JSON.stringify(scriptData, null, 2),
-      "utf-8"
-    );
-  } else {
-    console.log("  JSON 데이터 없음");
-  }
-
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // 방법 B) 좌측 사이드바 hover → 서브 메뉴 열기
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  console.log("\n[방법 B] 사이드바 hover 탐색...");
-
-  // 사이드바의 대분류 항목들 찾기
-  const sidebarItems = await page.evaluate(() => {
-    const items = [];
-    // 다양한 셀렉터 시도
+  // 햄버거 메뉴 or "카테고리" 버튼 클릭 — 여러 셀렉터 시도
+  const menuOpened = await page.evaluate(() => {
     const selectors = [
-      "[class*='category'] li a",
-      "[class*='Category'] li a",
-      "[class*='sidebar'] li a",
-      "[class*='lnb'] li a",
-      "[class*='gnb'] li a",
-      "[class*='nav'] li a[href*='categories']",
-      "nav a[href*='categories']",
-      "ul a[href*='/np/categories/']",
+      // "카테고리" 텍스트가 있는 요소
+      ...document.querySelectorAll("*"),
     ];
 
-    const found = new Set();
-    for (const sel of selectors) {
-      const els = document.querySelectorAll(sel);
-      for (const el of els) {
-        const href = el.getAttribute("href") || "";
-        if (!href.includes("categories")) continue;
-        const name = el.textContent?.trim();
-        if (!name || found.has(name)) continue;
-        found.add(name);
+    for (const el of selectors) {
+      const text = el.textContent?.trim();
+      const cls = el.className?.toString() || "";
 
-        const rect = el.getBoundingClientRect();
-        items.push({
-          name,
-          href,
-          x: rect.x + rect.width / 2,
-          y: rect.y + rect.height / 2,
-          visible: rect.width > 0 && rect.height > 0,
-        });
+      // "카테고리" 버튼 찾기
+      if (
+        (text === "카테고리" || text === "전체카테고리") &&
+        (el.tagName === "BUTTON" || el.tagName === "A" || el.tagName === "SPAN" || el.tagName === "DIV") &&
+        el.offsetWidth > 0
+      ) {
+        el.click();
+        return `clicked: ${el.tagName}.${cls.slice(0, 50)} "${text}"`;
       }
     }
+
+    // 햄버거 아이콘 (≡) 찾기
+    for (const el of document.querySelectorAll("button, a, div, span")) {
+      const cls = el.className?.toString() || "";
+      if (
+        (cls.includes("hamburger") || cls.includes("Hamburger") ||
+         cls.includes("category") || cls.includes("Category") ||
+         cls.includes("gnb") || cls.includes("menu-icon")) &&
+        el.offsetWidth > 0
+      ) {
+        el.click();
+        return `clicked: ${el.tagName}.${cls.slice(0, 50)}`;
+      }
+    }
+
+    return null;
+  });
+
+  if (menuOpened) {
+    console.log(`  ${menuOpened}`);
+  } else {
+    console.log("  자동 클릭 실패 — 수동 클릭 시도 (좌상단 영역)");
+    // 좌상단 햄버거 위치를 직접 클릭
+    await page.mouse.click(45, 42);
+  }
+
+  await new Promise((r) => setTimeout(r, 2000));
+
+  // ── 3) 대분류(1열) 항목 수집 ──
+  console.log("\n[1단계] 대분류 수집...");
+
+  const level1Items = await page.evaluate(() => {
+    const items = [];
+
+    // 카테고리 메뉴가 열린 후 보이는 모든 링크에서 대분류 후보 찾기
+    const allLinks = document.querySelectorAll("a[href*='/np/categories/']");
+
+    for (const link of allLinks) {
+      const rect = link.getBoundingClientRect();
+      // 화면에 보이고, 왼쪽 열에 있는 것 (x가 작은 것)
+      if (rect.width === 0 || rect.height === 0) continue;
+      if (rect.x > 200) continue; // 왼쪽 열만
+
+      const name = link.textContent?.replace(/\s+/g, " ").trim();
+      const href = link.getAttribute("href") || "";
+      if (!name || name.length < 2) continue;
+
+      const idMatch = href.match(/categories\/(\d+)/);
+      const id = idMatch ? idMatch[1] : "";
+
+      items.push({
+        name,
+        url: href.startsWith("/") ? "https://www.coupang.com" + href : href,
+        id,
+        x: rect.x + rect.width / 2,
+        y: rect.y + rect.height / 2,
+        width: rect.width,
+        height: rect.height,
+      });
+    }
+
+    // x 기준으로 가장 왼쪽에 있는 그룹만 필터
+    if (items.length > 0) {
+      const minX = Math.min(...items.map((i) => i.x));
+      return items.filter((i) => Math.abs(i.x - minX) < 100);
+    }
+
     return items;
   });
 
-  console.log(`  사이드바 항목: ${sidebarItems.length}개 (보이는 것: ${sidebarItems.filter((i) => i.visible).length}개)`);
+  // 대분류를 못 찾았으면 전체 보이는 카테고리 링크로 재시도
+  if (level1Items.length === 0) {
+    console.log("  왼쪽 열 필터 실패 — 전체 카테고리 링크에서 재시도");
 
-  // 보이는 사이드바 항목에 하나씩 hover
-  const visibleItems = sidebarItems.filter((i) => i.visible);
-  for (let i = 0; i < visibleItems.length; i++) {
-    const item = visibleItems[i];
-    console.log(`  hover [${i + 1}/${visibleItems.length}]: ${item.name}`);
+    const allVisibleLinks = await page.evaluate(() => {
+      const items = [];
+      const links = document.querySelectorAll("a[href*='/np/categories/']");
+      for (const link of links) {
+        const rect = link.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
 
-    try {
-      // 마우스를 항목 위로 이동
-      await page.mouse.move(item.x, item.y, { steps: 5 });
-      await new Promise((r) => setTimeout(r, 800 + Math.random() * 500));
+        const name = link.textContent?.replace(/\s+/g, " ").trim();
+        const href = link.getAttribute("href") || "";
+        if (!name || name.length < 2 || name.length > 20) continue;
 
-      // hover 후 나타난 서브 메뉴에서 카테고리 추출
-      const html = await page.content();
-      const links = extractLinksFromHtml(html);
-
-      let newCount = 0;
-      for (const [id, cat] of links) {
-        if (!allCategories.has(id)) {
-          allCategories.set(id, { ...cat, level: 0, parentId: null, parentName: null });
-          newCount++;
-        }
+        const idMatch = href.match(/categories\/(\d+)/);
+        items.push({
+          name,
+          url: href.startsWith("/") ? "https://www.coupang.com" + href : href,
+          id: idMatch ? idMatch[1] : "",
+          x: rect.x + rect.width / 2,
+          y: rect.y + rect.height / 2,
+          width: rect.width,
+          height: rect.height,
+        });
       }
+      return items;
+    });
 
-      if (newCount > 0) {
-        console.log(`    → ${newCount}개 새 카테고리 (총 ${allCategories.size}개)`);
-      }
-    } catch {}
-  }
-
-  // hover 안 된 경우를 대비해 현재 HTML에서도 추출
-  const mainHtml = await page.content();
-  const mainLinks = extractLinksFromHtml(mainHtml);
-  for (const [id, cat] of mainLinks) {
-    if (!allCategories.has(id)) {
-      allCategories.set(id, { ...cat, level: 0, parentId: null, parentName: null });
-    }
-  }
-
-  console.log(`\n  방법 A+B 합계: ${allCategories.size}개 카테고리`);
-
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-  // 방법 C) 각 카테고리 페이지 접속하여 하위 탐색
-  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-  // 레벨 0인 것들(메인에서 발견)을 레벨 1로 설정
-  // 대분류 판별: 짧은 이름 + 다른 카테고리의 이름에 포함되지 않는 것
-  const level0 = [...allCategories.values()];
-  const allNames = level0.map((c) => c.name);
-
-  for (const cat of level0) {
-    // 이름이 짧고(<=10자) 다른 이름의 prefix가 아닌 것 = 대분류
-    const isTop = cat.name.length <= 10 || allNames.filter((n) => n !== cat.name && n.includes(cat.name)).length > 0;
-    cat.level = isTop ? 1 : 2;
-  }
-
-  // depth 2 이상이면 대분류 페이지 접속
-  if (opts.depth >= 2) {
-    const topCats = [...allCategories.values()].filter((c) => c.level === 1);
-    console.log(`\n[방법 C] 대분류 ${topCats.length}개 페이지에서 하위 카테고리 수집`);
-
-    for (let i = 0; i < topCats.length; i++) {
-      const parent = topCats[i];
-      console.log(`\n  [${i + 1}/${topCats.length}] ${parent.name}`);
-
-      try {
-        await page.goto(parent.url, { waitUntil: "load", timeout: 20000 });
-        await new Promise((r) => setTimeout(r, 2000 + Math.random() * 2000));
-
-        // 스크롤
-        for (let j = 0; j < 5; j++) {
-          await page.evaluate(() => window.scrollBy(0, 500));
-          await new Promise((r) => setTimeout(r, 300));
-        }
-        await page.evaluate(() => window.scrollTo(0, 0));
-
-        const html = await page.content();
-        const links = extractLinksFromHtml(html);
-
-        let newCount = 0;
-        for (const [id, cat] of links) {
-          if (id === parent.id) continue;
-          if (!allCategories.has(id)) {
-            allCategories.set(id, {
-              ...cat,
-              level: 2,
-              parentId: parent.id,
-              parentName: parent.name,
-            });
-            newCount++;
-          }
-        }
-
-        console.log(`    → ${newCount}개 하위 카테고리 (총 ${allCategories.size}개)`);
-
-        if (i < topCats.length - 1) {
-          const wait = 3 + Math.floor(Math.random() * 5);
-          await new Promise((r) => setTimeout(r, wait * 1000));
-        }
-      } catch (err) {
-        console.error(`    실패: ${err.message}`);
+    // 중복 이름 제거, y좌표순 정렬
+    const seen = new Set();
+    for (const item of allVisibleLinks.sort((a, b) => a.y - b.y)) {
+      if (!seen.has(item.name) && level1Items.length < 25) {
+        seen.add(item.name);
+        level1Items.push(item);
       }
     }
   }
 
-  // depth 3: 중분류 → 소분류
-  if (opts.depth >= 3) {
-    const midCats = [...allCategories.values()].filter((c) => c.level === 2);
-    console.log(`\n[소분류] 중분류 ${midCats.length}개 페이지에서 소분류 수집`);
+  console.log(`  대분류 ${level1Items.length}개 발견:`);
+  level1Items.forEach((item, i) => {
+    console.log(`    ${i + 1}. ${item.name} (x:${Math.round(item.x)}, y:${Math.round(item.y)})`);
+  });
 
-    for (let i = 0; i < midCats.length; i++) {
-      const parent = midCats[i];
-      process.stdout.write(`  [${i + 1}/${midCats.length}] ${parent.name}...`);
+  // ── 4) 각 대분류 hover → 중분류(2열) 수집 ──
+  console.log("\n[2단계] 대분류 hover → 중분류 수집...");
 
-      try {
-        await page.goto(parent.url, { waitUntil: "load", timeout: 15000 });
-        await new Promise((r) => setTimeout(r, 1500 + Math.random() * 1500));
+  const allCategories = [];
 
-        const html = await page.content();
-        const links = extractLinksFromHtml(html);
+  // 대분류 추가
+  for (const item of level1Items) {
+    allCategories.push({
+      level: 1,
+      name: item.name,
+      url: item.url,
+      id: item.id,
+      parentId: null,
+      parentName: null,
+    });
+  }
 
-        let newCount = 0;
-        for (const [id, cat] of links) {
-          if (id === parent.id) continue;
-          if (!allCategories.has(id)) {
-            allCategories.set(id, {
-              ...cat,
-              level: 3,
-              parentId: parent.id,
-              parentName: parent.name,
-            });
-            newCount++;
-          }
+  for (let i = 0; i < level1Items.length; i++) {
+    const parent = level1Items[i];
+    console.log(`\n  [${i + 1}/${level1Items.length}] "${parent.name}" hover...`);
+
+    // 대분류 항목에 마우스 hover
+    await page.mouse.move(parent.x, parent.y, { steps: 3 });
+    await new Promise((r) => setTimeout(r, 800 + Math.random() * 500));
+
+    // hover 후 나타난 2열(중분류) 항목 수집
+    const level2Items = await page.evaluate((parentX) => {
+      const items = [];
+      const links = document.querySelectorAll("a[href*='/np/categories/']");
+
+      for (const link of links) {
+        const rect = link.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) continue;
+        // 2열: 대분류보다 오른쪽, 소분류보다 왼쪽
+        if (rect.x <= parentX + 50) continue; // 1열 제외
+        if (rect.x > 350) continue; // 3열 제외 (대략)
+
+        const name = link.textContent?.replace(/\s+/g, " ").trim();
+        const href = link.getAttribute("href") || "";
+        if (!name || name.length < 2) continue;
+
+        const idMatch = href.match(/categories\/(\d+)/);
+        items.push({
+          name,
+          url: href.startsWith("/") ? "https://www.coupang.com" + href : href,
+          id: idMatch ? idMatch[1] : "",
+          x: rect.x + rect.width / 2,
+          y: rect.y + rect.height / 2,
+        });
+      }
+
+      // x 기준 같은 열만 필터
+      if (items.length > 0) {
+        const midX = items.reduce((s, i) => s + i.x, 0) / items.length;
+        return items.filter((i) => Math.abs(i.x - midX) < 80);
+      }
+      return items;
+    }, parent.x);
+
+    // 중복 제거
+    const seen2 = new Set(allCategories.map((c) => c.id));
+    const newLevel2 = level2Items.filter((item) => item.id && !seen2.has(item.id));
+
+    for (const item of newLevel2) {
+      allCategories.push({
+        level: 2,
+        name: item.name,
+        url: item.url,
+        id: item.id,
+        parentId: parent.id,
+        parentName: parent.name,
+      });
+    }
+
+    console.log(`    중분류 ${newLevel2.length}개: ${newLevel2.map((i) => i.name).join(", ")}`);
+
+    // ── 5) 각 중분류 hover → 소분류(3열) 수집 ──
+    for (let j = 0; j < level2Items.length; j++) {
+      const mid = level2Items[j];
+
+      // 중분류에 hover
+      await page.mouse.move(mid.x, mid.y, { steps: 3 });
+      await new Promise((r) => setTimeout(r, 500 + Math.random() * 300));
+
+      // 3열(소분류) 수집
+      const level3Items = await page.evaluate((midX) => {
+        const items = [];
+        const links = document.querySelectorAll("a[href*='/np/categories/']");
+
+        for (const link of links) {
+          const rect = link.getBoundingClientRect();
+          if (rect.width === 0 || rect.height === 0) continue;
+          // 3열: 중분류보다 더 오른쪽
+          if (rect.x <= midX + 30) continue;
+
+          const name = link.textContent?.replace(/\s+/g, " ").trim();
+          const href = link.getAttribute("href") || "";
+          if (!name || name.length < 2) continue;
+
+          const idMatch = href.match(/categories\/(\d+)/);
+          items.push({
+            name,
+            url: href.startsWith("/") ? "https://www.coupang.com" + href : href,
+            id: idMatch ? idMatch[1] : "",
+          });
         }
+        return items;
+      }, mid.x);
 
-        console.log(` ${newCount}개`);
+      const seen3 = new Set(allCategories.map((c) => c.id));
+      const newLevel3 = level3Items.filter((item) => item.id && !seen3.has(item.id));
 
-        if (i < midCats.length - 1) {
-          const wait = 2 + Math.floor(Math.random() * 3);
-          await new Promise((r) => setTimeout(r, wait * 1000));
-        }
-      } catch {
-        console.log(" 실패");
+      for (const item of newLevel3) {
+        allCategories.push({
+          level: 3,
+          name: item.name,
+          url: item.url,
+          id: item.id,
+          parentId: mid.id,
+          parentName: mid.name,
+        });
+      }
+
+      if (newLevel3.length > 0) {
+        console.log(`      ${mid.name} → 소분류 ${newLevel3.length}개: ${newLevel3.map((i) => i.name).join(", ")}`);
       }
     }
   }
 
   // ── 결과 정리 ──
-  const sorted = [...allCategories.values()].sort((a, b) => {
+  // 중복 제거 (id 기준)
+  const uniqueMap = new Map();
+  for (const cat of allCategories) {
+    if (!uniqueMap.has(cat.id)) {
+      uniqueMap.set(cat.id, cat);
+    }
+  }
+  const sorted = [...uniqueMap.values()].sort((a, b) => {
     if (a.level !== b.level) return a.level - b.level;
     return a.name.localeCompare(b.name, "ko");
   });
@@ -361,25 +330,20 @@ async function main() {
   console.log(`총 ${sorted.length}개 카테고리 수집 완료`);
   console.log("=".repeat(60));
 
-  console.log("\n[레벨별 카테고리 수]");
+  console.log("\n[레벨별]");
   for (const [level, count] of Object.entries(levelCounts).sort()) {
-    console.log(`  레벨 ${level}: ${count}개`);
+    const label = level === "1" ? "대분류" : level === "2" ? "중분류" : "소분류";
+    console.log(`  레벨 ${level} (${label}): ${count}개`);
   }
 
-  // 대분류만 먼저 출력
-  console.log("\n[대분류 목록]");
-  sorted
-    .filter((c) => c.level === 1)
-    .forEach((cat, i) => {
-      console.log(`  ${i + 1}. ${cat.name}`);
-      console.log(`     ${cat.url}`);
-    });
-
-  // 전체 트리 출력
-  console.log("\n[전체 카테고리 트리]");
+  console.log("\n[전체 트리]");
+  let currentParent = "";
   sorted.forEach((cat) => {
     const indent = "  ".repeat(cat.level);
-    const parent = cat.parentName ? ` (← ${cat.parentName})` : "";
+    if (cat.level === 1) {
+      console.log("");
+    }
+    const parent = cat.parentName && cat.level > 1 ? ` (← ${cat.parentName})` : "";
     console.log(`${indent}[Lv${cat.level}] ${cat.name}${parent}`);
     console.log(`${indent}      ${cat.url}`);
   });
@@ -387,7 +351,6 @@ async function main() {
   // ── 파일 저장 ──
   const output = {
     crawledAt: new Date().toISOString(),
-    depth: opts.depth,
     totalCategories: sorted.length,
     levelCounts,
     categories: sorted,
