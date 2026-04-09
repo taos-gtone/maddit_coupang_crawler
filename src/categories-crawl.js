@@ -208,60 +208,49 @@ async function main() {
     const rightLinks = afterHover.filter((l) => l.x > col1MaxX && isValidSub(l, topIdSet));
     const col2 = extractColumn(rightLinks);
 
-    // 2열 메뉴 컨테이너의 DOM 스크롤로 숨겨진 중분류 추가 수집
-    // (마우스 휠 스크롤은 다른 대분류를 건드려서 사용 안 함)
+    // 2열에서 보이는 항목의 부모 컨테이너를 찾고,
+    // 그 안의 모든 카테고리 링크를 수집 (화면 밖 잘린 것 포함)
     if (col2.items.length > 0) {
-      const extraItems = await page.evaluate(({ col2MinX, col2MaxX }) => {
-        // 2열 영역의 스크롤 가능한 부모 찾기
-        const allLinks = document.querySelectorAll("a[href*='/np/categories/']");
-        let scrollContainer = null;
+      const extraItems = await page.evaluate(({ sampleId }) => {
+        // 이미 찾은 2열 항목 중 하나의 <a> 태그를 기준으로 부모 컨테이너 찾기
+        const sampleLink = document.querySelector(`a[href*='/np/categories/${sampleId}']`);
+        if (!sampleLink) return [];
 
-        for (const a of allLinks) {
+        // 부모를 올라가면서 카테고리 링크를 여러 개 담고 있는 컨테이너 찾기
+        let container = sampleLink.parentElement;
+        while (container) {
+          const links = container.querySelectorAll("a[href*='/np/categories/']");
+          // 컨테이너가 2개 이상 카테고리 링크를 가지고 있고,
+          // 너무 크지 않은 것 (body 전체가 아닌)
+          if (links.length >= 2 && links.length <= 30 && container.tagName !== "BODY") {
+            break;
+          }
+          container = container.parentElement;
+        }
+
+        if (!container) return [];
+
+        // 이 컨테이너 안의 모든 카테고리 링크 수집
+        const found = [];
+        const links = container.querySelectorAll("a[href*='/np/categories/']");
+        for (const a of links) {
+          const href = a.getAttribute("href") || "";
+          const idMatch = href.match(/categories\/(\d+)/);
+          if (!idMatch) continue;
+          const name = a.textContent?.replace(/\s+/g, " ").trim();
+          if (!name || name.length < 2) continue;
+          let url = href;
+          if (url.startsWith("/")) url = "https://www.coupang.com" + url;
           const rect = a.getBoundingClientRect();
-          if (rect.x >= col2MinX && rect.x <= col2MaxX && rect.width > 0) {
-            let p = a.parentElement;
-            while (p) {
-              if (p.scrollHeight > p.clientHeight + 10) {
-                scrollContainer = p;
-                break;
-              }
-              p = p.parentElement;
-            }
-            if (scrollContainer) break;
-          }
+          found.push({
+            name, url, id: idMatch[1],
+            x: Math.round(rect.x), y: Math.round(rect.y),
+            cx: Math.round(rect.x + rect.width / 2),
+            cy: Math.round(rect.y + rect.height / 2),
+          });
         }
-
-        if (!scrollContainer) return [];
-
-        // 스크롤 컨테이너를 끝까지 스크롤하면서 모든 링크 수집
-        const found = new Map();
-        const origScroll = scrollContainer.scrollTop;
-
-        for (let pos = 0; pos < scrollContainer.scrollHeight; pos += 200) {
-          scrollContainer.scrollTop = pos;
-          for (const a of scrollContainer.querySelectorAll("a[href*='/np/categories/']")) {
-            const href = a.getAttribute("href") || "";
-            const idMatch = href.match(/categories\/(\d+)/);
-            if (!idMatch) continue;
-            const name = a.textContent?.replace(/\s+/g, " ").trim();
-            if (!name || name.length < 2) continue;
-            let url = href;
-            if (url.startsWith("/")) url = "https://www.coupang.com" + url;
-            const rect = a.getBoundingClientRect();
-            found.set(idMatch[1], {
-              name, url, id: idMatch[1],
-              x: Math.round(rect.x), y: Math.round(rect.y),
-              cx: Math.round(rect.x + rect.width / 2),
-              cy: Math.round(rect.y + rect.height / 2),
-            });
-          }
-        }
-
-        // 스크롤 원위치
-        scrollContainer.scrollTop = origScroll;
-
-        return [...found.values()];
-      }, { col2MinX: col2.minX, col2MaxX: col2.maxX });
+        return found;
+      }, { sampleId: col2.items[0].id });
 
       // 추가 발견된 항목 합치기
       if (extraItems.length > 0) {
